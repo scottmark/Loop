@@ -1,12 +1,11 @@
 {
-  "commitish" : "v0.2.1",
   "iOS" : [
     {
-      "hash" : "7a23bd73e6e8f0daee22d4df7ff6f410a40d21ebf83998e1adb12010a7ee902f",
+      "hash" : "d87c4461d79024396b8132e517c41d32b0fb4d64f1bfb199aa3a93265246de74",
       "name" : "ShareClient"
     }
   ],
-  "xcodeVersion" : "Xcode 8.3.2\nBuild version 8E2002",
+  "commitish" : "v0.4.1",
   "watchOS" : [
 
   ],

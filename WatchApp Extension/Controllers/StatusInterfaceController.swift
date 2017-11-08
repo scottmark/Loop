@@ -12,7 +12,6 @@ import Foundation
 
 final class StatusInterfaceController: WKInterfaceController, ContextUpdatable {
 
-    @IBOutlet weak var graphImage: WKInterfaceImage!
     @IBOutlet weak var loopHUDImage: WKInterfaceImage!
     @IBOutlet weak var loopTimer: WKInterfaceTimer!
     @IBOutlet weak var glucoseLabel: WKInterfaceLabel!
@@ -20,6 +19,37 @@ final class StatusInterfaceController: WKInterfaceController, ContextUpdatable {
     @IBOutlet weak var statusLabel: WKInterfaceLabel!
 
     private var lastContext: WatchContext?
+
+    override func didAppear() {
+        super.didAppear()
+
+        updateLoopHUD()
+    }
+
+    override func willActivate() {
+        super.willActivate()
+
+        updateLoopHUD()
+    }
+
+    private func updateLoopHUD() {
+        guard let date = lastContext?.loopLastRunDate else {
+            return
+        }
+
+        let loopImage: LoopImage
+
+        switch date.timeIntervalSinceNow {
+        case let t where t > .minutes(-6):
+            loopImage = .Fresh
+        case let t where t > .minutes(-20):
+            loopImage = .Aging
+        default:
+            loopImage = .Stale
+        }
+
+        self.loopHUDImage.setLoopImage(loopImage)
+    }
 
     func update(with context: WatchContext?) {
         lastContext = context
@@ -29,18 +59,7 @@ final class StatusInterfaceController: WKInterfaceController, ContextUpdatable {
             self.loopTimer.setHidden(false)
             self.loopTimer.start()
 
-            let loopImage: LoopImage
-
-            switch date.timeIntervalSinceNow {
-            case let t where t.minutes <= 5:
-                loopImage = .Fresh
-            case let t where t.minutes <= 15:
-                loopImage = .Aging
-            default:
-                loopImage = .Stale
-            }
-
-            self.loopHUDImage.setLoopImage(loopImage)
+            updateLoopHUD()
         } else {
             loopTimer.setHidden(true)
             loopHUDImage.setLoopImage(.Unknown)
@@ -74,7 +93,6 @@ final class StatusInterfaceController: WKInterfaceController, ContextUpdatable {
         
         // TODO: Other elements
         statusLabel.setHidden(true)
-        graphImage.setHidden(true)
     }
 
     // MARK: - Menu Items

@@ -13,7 +13,7 @@ import LoopUI
 
 
 private extension RefreshContext {
-    static let all: RefreshContext = [.glucose, .targets]
+    static let all: Set<RefreshContext> = [.glucose, .targets]
 }
 
 
@@ -22,6 +22,7 @@ class PredictionTableViewController: ChartsTableViewController, IdentifiableClas
     override func viewDidLoad() {
         super.viewDidLoad()
 
+        tableView.rowHeight = UITableViewAutomaticDimension
         tableView.cellLayoutMarginsFollowReadableWidth = true
 
         charts.glucoseDisplayRange = (
@@ -32,12 +33,12 @@ class PredictionTableViewController: ChartsTableViewController, IdentifiableClas
         let notificationCenter = NotificationCenter.default
 
         notificationObservers += [
-            notificationCenter.addObserver(forName: .LoopDataUpdated, object: deviceManager.loopManager, queue: nil) { note in
+            notificationCenter.addObserver(forName: .LoopDataUpdated, object: deviceManager.loopManager, queue: nil) { [unowned self] note in
                 let context = note.userInfo?[LoopDataManager.LoopUpdateContextKey] as! LoopDataManager.LoopUpdateContext.RawValue
                 DispatchQueue.main.async {
                     switch LoopDataManager.LoopUpdateContext(rawValue: context) {
                     case .preferences?:
-                        self.refreshContext.update(with: [.status, .targets])
+                        self.refreshContext.formUnion([.status, .targets])
                     case .glucose?:
                         self.refreshContext.update(with: .glucose)
                     default:
@@ -54,12 +55,12 @@ class PredictionTableViewController: ChartsTableViewController, IdentifiableClas
         super.didReceiveMemoryWarning()
 
         if !visible {
-            refreshContext = .all
+            refreshContext = RefreshContext.all
         }
     }
 
     override func viewWillTransition(to size: CGSize, with coordinator: UIViewControllerTransitionCoordinator) {
-        refreshContext.update(with: .status)
+        refreshContext.update(with: .size(size))
 
         super.viewWillTransition(to: size, with: coordinator)
     }
@@ -76,16 +77,17 @@ class PredictionTableViewController: ChartsTableViewController, IdentifiableClas
         }
         set {
             if newValue != chartStartDate {
-                refreshContext = .all
+                refreshContext = RefreshContext.all
             }
 
             charts.startDate = newValue
         }
     }
 
-    override func reloadData(animated: Bool = false, to size: CGSize? = nil) {
+    override func reloadData(animated: Bool = false) {
         guard active && visible && !refreshContext.isEmpty else { return }
 
+        refreshContext.remove(.size(.zero))
         let calendar = Calendar.current
         var components = DateComponents()
         components.minute = 0
@@ -154,13 +156,24 @@ class PredictionTableViewController: ChartsTableViewController, IdentifiableClas
         reloadGroup.notify(queue: .main) {
             self.charts.prerender()
 
-            for case let cell as ChartTableViewCell in self.tableView.visibleCells {
-                cell.reloadChart()
+            self.tableView.beginUpdates()
+            for cell in self.tableView.visibleCells {
+                switch cell {
+                case let cell as ChartTableViewCell:
+                    cell.reloadChart()
 
-                if let indexPath = self.tableView.indexPath(for: cell) {
-                    self.tableView(self.tableView, updateTitleFor: cell, at: indexPath)
+                    if let indexPath = self.tableView.indexPath(for: cell) {
+                        self.tableView(self.tableView, updateTitleFor: cell, at: indexPath)
+                    }
+                case let cell as PredictionInputEffectTableViewCell:
+                    if let indexPath = self.tableView.indexPath(for: cell) {
+                        self.tableView(self.tableView, updateTextFor: cell, at: indexPath)
+                    }
+                default:
+                    break
                 }
             }
+            self.tableView.endUpdates()
         }
     }
 
@@ -199,7 +212,6 @@ class PredictionTableViewController: ChartsTableViewController, IdentifiableClas
         switch Section(rawValue: indexPath.section)! {
         case .charts:
             let cell = tableView.dequeueReusableCell(withIdentifier: ChartTableViewCell.className, for: indexPath) as! ChartTableViewCell
-            cell.titleLabel?.textColor = UIColor.secondaryLabelColor
             cell.contentView.layoutMargins.left = tableView.separatorInset.left
             cell.chartContentView.chartGenerator = { [weak self] (frame) in
                 return self?.charts.glucoseChartWithFrame(frame)?.view
@@ -214,35 +226,7 @@ class PredictionTableViewController: ChartsTableViewController, IdentifiableClas
             return cell
         case .inputs:
             let cell = tableView.dequeueReusableCell(withIdentifier: PredictionInputEffectTableViewCell.className, for: indexPath) as! PredictionInputEffectTableViewCell
-
-            let input = availableInputs[indexPath.row]
-
-            cell.titleLabel?.text = input.localizedTitle
-            cell.accessoryType = selectedInputs.contains(input) ? .checkmark : .none
-            cell.enabled = input != .retrospection || deviceManager.loopManager.settings.retrospectiveCorrectionEnabled
-
-            var subtitleText = input.localizedDescription(forGlucoseUnit: charts.glucoseUnit) ?? ""
-
-            if input == .retrospection,
-                let startGlucose = retrospectivePredictedGlucose?.first,
-                let endGlucose = retrospectivePredictedGlucose?.last,
-                let currentGlucose = self.deviceManager.loopManager.glucoseStore.latestGlucose
-            {
-                let formatter = NumberFormatter.glucoseFormatter(for: charts.glucoseUnit)
-                let values = [startGlucose, endGlucose, currentGlucose].map { formatter.string(from: NSNumber(value: $0.quantity.doubleValue(for: charts.glucoseUnit))) ?? "?" }
-
-                let retro = String(
-                    format: NSLocalizedString("Last comparison: %1$@ → %2$@ vs %3$@", comment: "Format string describing retrospective glucose prediction comparison. (1: Previous glucose)(2: Predicted glucose)(3: Actual glucose)"),
-                    values[0], values[1], values[2]
-                )
-
-                subtitleText = String(format: "%@\n%@", subtitleText, retro)
-            }
-
-            cell.subtitleLabel?.text = subtitleText
-
-            cell.contentView.layoutMargins.left = tableView.separatorInset.left
-
+            self.tableView(tableView, updateTextFor: cell, at: indexPath)
             return cell
         case .settings:
             let cell = tableView.dequeueReusableCell(withIdentifier: SwitchTableViewCell.className, for: indexPath) as! SwitchTableViewCell
@@ -259,16 +243,47 @@ class PredictionTableViewController: ChartsTableViewController, IdentifiableClas
     }
 
     private func tableView(_ tableView: UITableView, updateTitleFor cell: ChartTableViewCell, at indexPath: IndexPath) {
-        switch Section(rawValue: indexPath.section)! {
-        case .charts:
-            if let eventualGlucose = eventualGlucoseDescription {
-                cell.titleLabel?.text = String(format: NSLocalizedString("Eventually %@", comment: "The subtitle format describing eventual glucose. (1: localized glucose value description)"), eventualGlucose)
-            } else {
-                cell.titleLabel?.text = "–"
-            }
-        default:
-            break
+        guard case .charts? = Section(rawValue: indexPath.section) else {
+            return
         }
+
+        if let eventualGlucose = eventualGlucoseDescription {
+            cell.titleLabel?.text = String(format: NSLocalizedString("Eventually %@", comment: "The subtitle format describing eventual glucose. (1: localized glucose value description)"), eventualGlucose)
+        } else {
+            cell.titleLabel?.text = "–"
+        }
+    }
+
+    private func tableView(_ tableView: UITableView, updateTextFor cell: PredictionInputEffectTableViewCell, at indexPath: IndexPath) {
+        guard case .inputs? = Section(rawValue: indexPath.section) else {
+            return
+        }
+
+        let input = availableInputs[indexPath.row]
+
+        cell.titleLabel?.text = input.localizedTitle
+        cell.accessoryType = selectedInputs.contains(input) ? .checkmark : .none
+        cell.enabled = input != .retrospection || deviceManager.loopManager.settings.retrospectiveCorrectionEnabled
+
+        var subtitleText = input.localizedDescription(forGlucoseUnit: charts.glucoseUnit) ?? ""
+
+        if input == .retrospection,
+            let startGlucose = retrospectivePredictedGlucose?.first,
+            let endGlucose = retrospectivePredictedGlucose?.last,
+            let currentGlucose = self.deviceManager.loopManager.glucoseStore.latestGlucose
+        {
+            let formatter = NumberFormatter.glucoseFormatter(for: charts.glucoseUnit)
+            let values = [startGlucose, endGlucose, currentGlucose].map { formatter.string(from: NSNumber(value: $0.quantity.doubleValue(for: charts.glucoseUnit))) ?? "?" }
+
+            let retro = String(
+                format: NSLocalizedString("Last comparison: %1$@ → %2$@ vs %3$@", comment: "Format string describing retrospective glucose prediction comparison. (1: Previous glucose)(2: Predicted glucose)(3: Actual glucose)"),
+                values[0], values[1], values[2]
+            )
+
+            subtitleText = String(format: "%@\n%@", subtitleText, retro)
+        }
+
+        cell.subtitleLabel?.text = subtitleText
     }
 
     override func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
